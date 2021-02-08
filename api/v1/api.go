@@ -41,6 +41,7 @@ import (
 	"github.com/prometheus/alertmanager/types"
 )
 
+//定义允许跨域的首部字段
 var corsHeaders = map[string]string{
 	"Access-Control-Allow-Headers":  "Accept, Authorization, Content-Type, Origin",
 	"Access-Control-Allow-Methods":  "GET, POST, DELETE, OPTIONS",
