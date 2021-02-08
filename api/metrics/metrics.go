@@ -23,6 +23,7 @@ type Alerts struct {
 }
 
 // NewAlerts returns an *Alerts struct for the given API version.
+//创建am关于告警处理统计的指标，供API接口的函数调用
 func NewAlerts(version string, r prometheus.Registerer) *Alerts {
 	numReceivedAlerts := prometheus.NewCounterVec(prometheus.CounterOpts{
 		Name:        "alertmanager_alerts_received_total",

@@ -39,14 +39,15 @@ import (
 type API struct {
 	v1                       *apiv1.API
 	v2                       *apiv2.API
-	requestsInFlight         prometheus.Gauge
-	concurrencyLimitExceeded prometheus.Counter
+	requestsInFlight         prometheus.Gauge			//属性含义：飞行中的请求?
+	concurrencyLimitExceeded prometheus.Counter			//属性含义：超出并发限制
 	timeout                  time.Duration
-	inFlightSem              chan struct{}
+	inFlightSem              chan struct{}				//属性含义：一个通道
 }
 
 // Options for the creation of an API object. Alerts, Silences, and StatusFunc
 // are mandatory to set. The zero value for everything else is a safe default.
+//创建API对象时的参数，Alerts, Silences, and StatusFunc必须设置参数，参数全设置为0是安全的默认值
 type Options struct {
 	// Alerts to be used by the API. Mandatory.
 	Alerts provider.Alerts
@@ -94,12 +95,14 @@ func (o Options) validate() error {
 
 // New creates a new API object combining all API versions. Note that an Update
 // call is also needed to get the APIs into an operational state.
+//新建API对象。请注意，还需要进行Update调用才能使API进入运行状态。
 func New(opts Options) (*API, error) {
 	if err := opts.validate(); err != nil {
 		return nil, fmt.Errorf("invalid API options: %s", err)
 	}
 	l := opts.Logger
 	if l == nil {
+		//如果opts对象没有携带logger对象作为属性，则此处新建一个logger来使用
 		l = log.NewNopLogger()
 	}
 	concurrency := opts.Concurrency
@@ -110,6 +113,7 @@ func New(opts Options) (*API, error) {
 		}
 	}
 
+	//创建api对象时，将opts对象的属性值传递过去
 	v1 := apiv1.New(
 		opts.Alerts,
 		opts.Silences,
@@ -135,6 +139,7 @@ func New(opts Options) (*API, error) {
 
 	// TODO(beorn7): For now, this hardcodes the method="get" label. Other
 	// methods should get the same instrumentation.
+	//创建am api相关的指标，此处写死了method=get
 	requestsInFlight := prometheus.NewGauge(prometheus.GaugeOpts{
 		Name:        "alertmanager_http_requests_in_flight",
 		Help:        "Current number of HTTP requests being processed.",
@@ -145,6 +150,7 @@ func New(opts Options) (*API, error) {
 		Help:        "Total number of times an HTTP request failed because the concurrency limit was reached.",
 		ConstLabels: prometheus.Labels{"method": "get"},
 	})
+	//这个Registry是用来将指标注册到prometheus_client的，使用过prometheus_client就知道
 	if opts.Registry != nil {
 		if err := opts.Registry.Register(requestsInFlight); err != nil {
 			return nil, err
@@ -160,7 +166,7 @@ func New(opts Options) (*API, error) {
 		requestsInFlight:         requestsInFlight,
 		concurrencyLimitExceeded: concurrencyLimitExceeded,
 		timeout:                  opts.Timeout,
-		inFlightSem:              make(chan struct{}, concurrency),
+		inFlightSem:              make(chan struct{}, concurrency),			//并发数就是这个通道的容量
 	}, nil
 }
 
@@ -172,12 +178,19 @@ func New(opts Options) (*API, error) {
 // API, it is enforced for all HTTP request going through this mux. The same is
 // true for the concurrency limit, with the exception that it is only applied to
 // GET requests.
+//向路由器注册所有的API。其中v1版会直接全部注册
+//当APIv2在http.Handler级别上工作时，此方法还将创建一个新的http.ServeMux，然后使用它注册提供的路由器（以处理"/"）和APIv2（以处理"<routePrefix>/api/v2"），并将创建的http.ServeMux返回
+//如果在构建API时设置了超时，则对通过此多路复用器的所有HTTP请求强制执行超时。并发限制也是如此，只是它仅适用于GET请求
 func (api *API) Register(r *route.Router, routePrefix string) *http.ServeMux {
+	//v1直接注册
 	api.v1.Register(r.WithPrefix("/api/v1"))
 
+	//创建一个新的mux并先注册"/""
 	mux := http.NewServeMux()
 	mux.Handle("/", api.limitHandler(r))
 
+	//传参routePrefix表示这里注册的所有URI是基于哪个外层URI的。比如routePrefix是/test，这里再注册/api，那么实际URI就是/test/api
+	//由于上面创建了新的mux，没有使用传参进来的r，所以需要获取一下routePrefix，给新的mux使用
 	apiPrefix := ""
 	if routePrefix != "/" {
 		apiPrefix = routePrefix
@@ -196,11 +209,13 @@ func (api *API) Register(r *route.Router, routePrefix string) *http.ServeMux {
 
 // Update config and resolve timeout of each API. APIv2 also needs
 // setAlertStatus to be updated.
+//更新api的配置和解析超时，这样api才能工作
 func (api *API) Update(cfg *config.Config, setAlertStatus func(model.LabelSet)) {
 	api.v1.Update(cfg)
 	api.v2.Update(cfg, setAlertStatus)
 }
 
+//http请求处理并发限制的实现，会返回一个带有并发限制功能的http.Handler
 func (api *API) limitHandler(h http.Handler) http.Handler {
 	concLimiter := http.HandlerFunc(func(rsp http.ResponseWriter, req *http.Request) {
 		if req.Method == http.MethodGet { // Only limit concurrency of GETs.
