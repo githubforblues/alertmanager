@@ -52,6 +52,8 @@ var corsHeaders = map[string]string{
 
 // Alert is the API representation of an alert, which is a regular alert
 // annotated with silencing and inhibition info.
+//下面这个Alert结构体是告警的API表示，它带有沉默和抑制信息
+//从API接口进来的请求包，就会构建Alert对象
 type Alert struct {
 	*model.Alert
 	Status      types.AlertStatus `json:"status"`
@@ -60,6 +62,7 @@ type Alert struct {
 }
 
 // Enables cross-site script calls.
+//启用跨站点脚本调用
 func setCORS(w http.ResponseWriter) {
 	for h, v := range corsHeaders {
 		w.Header().Set(h, v)
@@ -67,6 +70,7 @@ func setCORS(w http.ResponseWriter) {
 }
 
 // API provides registration of handlers for API routes.
+//这个结构体就是v1的API对象，包含api router等信息
 type API struct {
 	alerts   provider.Alerts
 	silences *silence.Silences
@@ -85,6 +89,7 @@ type API struct {
 type getAlertStatusFn func(model.Fingerprint) types.AlertStatus
 
 // New returns a new API.
+//New方法的参数是从Options对象中传递过来的，注意创建API对象的时候，并没有赋值route属性
 func New(
 	alerts provider.Alerts,
 	silences *silence.Silences,
@@ -110,6 +115,9 @@ func New(
 
 // Register registers the API handlers under their correct routes
 // in the given router.
+//这里r是从外层api.Register传递过来的，这里就是实际的路由注册，主要参数为method、uri、处理函数
+//下面wrap做了一个类似于python中装饰器的实现。wrap函数的入参是一个函数对象，返回值也是一个函数对象，返回值作为路由的处理函数
+//可以看到，在go中函数也是对象。可能的规则为：只要两个函数的签名相同，就可以认为是相同的类型；下面return是类型转换操作，将匿名函数的类型转换为http.HandlerFunc
 func (api *API) Register(r *route.Router) {
 	wrap := func(f http.HandlerFunc) http.HandlerFunc {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -124,7 +132,7 @@ func (api *API) Register(r *route.Router) {
 	r.Get("/receivers", wrap(api.receivers))
 
 	r.Get("/alerts", wrap(api.listAlerts))
-	r.Post("/alerts", wrap(api.addAlerts))
+	r.Post("/alerts", wrap(api.addAlerts))		//prom发送告警的接口
 
 	r.Get("/silences", wrap(api.listSilences))
 	r.Post("/silences", wrap(api.setSilence))
@@ -133,6 +141,7 @@ func (api *API) Register(r *route.Router) {
 }
 
 // Update sets the configuration string to a new value.
+//这就是外层提到的更新操作
 func (api *API) Update(cfg *config.Config) {
 	api.mtx.Lock()
 	defer api.mtx.Unlock()
@@ -393,8 +402,10 @@ func alertMatchesFilterLabels(a *model.Alert, matchers []*labels.Matcher) bool {
 	return matchFilterLabels(matchers, sms)
 }
 
+//接收prom发送的告警的接口
 func (api *API) addAlerts(w http.ResponseWriter, r *http.Request) {
 	var alerts []*types.Alert
+	//从请求包中提取alerts对象
 	if err := api.receive(r, &alerts); err != nil {
 		api.respondError(w, apiError{
 			typ: errorBadData,
@@ -406,6 +417,7 @@ func (api *API) addAlerts(w http.ResponseWriter, r *http.Request) {
 	api.insertAlerts(w, r, alerts...)
 }
 
+//真正处理告警的入口
 func (api *API) insertAlerts(w http.ResponseWriter, r *http.Request, alerts ...*types.Alert) {
 	now := time.Now()
 
@@ -413,6 +425,8 @@ func (api *API) insertAlerts(w http.ResponseWriter, r *http.Request, alerts ...*
 	resolveTimeout := time.Duration(api.config.Global.ResolveTimeout)
 	api.mtx.RUnlock()
 
+	//读取告警对象，并设置它的StartsAt UpdatedAt EndsAt
+	//最常见的情况是：StartsAt 和 UpdatedAt 均为现在时间，EndsAt 为现在时间+resolveTimeout
 	for _, alert := range alerts {
 		alert.UpdatedAt = now
 
@@ -430,6 +444,7 @@ func (api *API) insertAlerts(w http.ResponseWriter, r *http.Request, alerts ...*
 			alert.Timeout = true
 			alert.EndsAt = now.Add(resolveTimeout)
 		}
+		//先记录到告警监控统计中
 		if alert.EndsAt.After(time.Now()) {
 			api.m.Firing().Inc()
 		} else {
@@ -438,6 +453,7 @@ func (api *API) insertAlerts(w http.ResponseWriter, r *http.Request, alerts ...*
 	}
 
 	// Make a best effort to insert all alerts that are valid.
+	//尽最大努力插入所有有效的告警
 	var (
 		validAlerts    = make([]*types.Alert, 0, len(alerts))
 		validationErrs = &types.MultiError{}
@@ -445,6 +461,7 @@ func (api *API) insertAlerts(w http.ResponseWriter, r *http.Request, alerts ...*
 	for _, a := range alerts {
 		removeEmptyLabels(a.Labels)
 
+		//判断告警是否有效
 		if err := a.Validate(); err != nil {
 			validationErrs.Add(err)
 			api.m.Invalid().Inc()
@@ -452,6 +469,7 @@ func (api *API) insertAlerts(w http.ResponseWriter, r *http.Request, alerts ...*
 		}
 		validAlerts = append(validAlerts, a)
 	}
+	//将有效的告警存放到api.alerts中
 	if err := api.alerts.Put(validAlerts...); err != nil {
 		api.respondError(w, apiError{
 			typ: errorInternal,
